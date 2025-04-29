@@ -114,6 +114,9 @@ class Detector:
 
         return img
     
+    def draw_point(self, img, loc):
+        return cv2.circle(img, loc, 2, (255,0,0), 2)
+    
     def id2name(self, i):
         """
         Converts a class index to a class name.
@@ -127,15 +130,17 @@ class Detector:
     
 def demo():
     import os
-    model = Detector()
-    model.set_threshold(0.5)
+    model = Detector(yolo_dir='./shrinkray_heist/model',from_tensor_rt=False)
+    model.set_threshold(0.7)
     
-    img_path = f"{os.path.dirname(__file__)}/../../media/minion.png" 
+    #img_path = f"{os.path.dirname(__file__)}/../../media/minion.png"
+    img_path = "./media/minion.png" 
         
     img = Image.open(img_path)
     results = model.predict(img)
     
     predictions = results["predictions"]
+    print(predictions)
     original_image = results["original_image"]
         
     out = model.draw_box(original_image, predictions, draw_all=True)

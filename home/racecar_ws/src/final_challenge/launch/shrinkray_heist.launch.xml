@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="final_chalenge" exec="basement_point_publisher" name="basement_point_publisher" output="screen">
+        <!-- <param from="$(find-pkg-share final_challenge)/shrinkray_heist_params.yaml"/> -->
+    </node>
+</launch>

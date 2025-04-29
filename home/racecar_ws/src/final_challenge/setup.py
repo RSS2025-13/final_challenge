@@ -20,10 +20,17 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'trajectory_builder = path_planning.trajectory_builder:main',
-            'trajectory_loader = path_planning.trajectory_loader:main',
-            'trajectory_follower = path_planning.trajectory_follower:main',
-            'trajectory_planner = path_planning.trajectory_planner:main',
+            #path following and planning
+            'trajectory_builder = final_challenge.trajectory_builder:main',
+            'trajectory_loader = final_challenge.trajectory_loader:main',
+            'trajectory_follower = final_challenge.trajectory_follower:main',
+            'trajectory_planner = final_challenge.trajectory_planner:main',
+            #localization
+            'particle_filter = final_challenge.particle_filter:main',
+            #banana finder model
+            'detection_node = final_challenge.detection_node:main',
+            #Point publisher
+            'basement_point_publisher = final_challenge.basement_point_publisher:main'
         ],
     },
 )
