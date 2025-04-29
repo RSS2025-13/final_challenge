@@ -14,7 +14,6 @@ class DetectorNode(Node):
         self.detector = Detector(yolo_dir='./shrinkray_heist/model',from_tensor_rt=False, threshold=0.5)
         self.publisher = self.create_publisher(Pixel, "detector/banana_pix_loc", 1)
         self.debug_publisher = self.create_publisher(Image, "detector/marked_img", 1)
-        self.timer = self.create_timer(0.5, self.timer_callback)
         self.alert_subscriber = self.create_subscription(Bool, "detector/alert", self.alert_callback, 10)
         self.image_subscriber = self.create_subscription(Image, "/zed/zed_node/rgb/image_rect_color", self.image_callback, 1)
         self.bridge = CvBridge()
@@ -24,28 +23,6 @@ class DetectorNode(Node):
 
     def alert_callback(self, msg):
         self.alert = msg.data
-    
-    def timer_callback(self):
-        if self.alert:
-            img_path = "./src/final_challenge/media/minion.png" 
-            image = Image.open(img_path)
-            #TODO: run image through self.detector and publish bounding box image
-            results = self.detector.predict(image)
-            predictions = results["predictions"]
-
-            #ideally, there should onyl be 1 banana detected
-            x1, y1, x2, y2 = predictions[0]
-            pix_loc = Pixel()
-            pix_loc.u = round((x1+x2)/2)
-            pix_loc.v = round((y1+y2)/2)
-
-            self.publisher.publish(pix_loc)
-
-            original_image = results["original_image"] #in rgb
-            out = self.detector.draw_point(original_image, (pix_loc.u,pix_loc.v))
-            img_out = self.bridge.cv2_to_imgmsg(out)
-            self.image_publisher.publish(img_out)
-            self.alert = False
 
     def image_callback(self, img_msg):
         # Process image with CV Bridge

@@ -32,7 +32,9 @@ setup(
             #Point publisher
             'basement_point_publisher = final_challenge.shrinkray_heist.basement_point_publisher:main',
             #Stop light
-            'stoplight_controller = final_challenge.shrinkray_heist.stoplight_controller:main'
+            'stoplight_controller = final_challenge.shrinkray_heist.stoplight_controller:main',
+            #Safety controller
+            'safety_controller = final_challenge.shrinkray_heist.safety_controller:main'
         ],
     },
 )
