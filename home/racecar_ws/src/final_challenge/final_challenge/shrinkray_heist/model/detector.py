@@ -134,7 +134,7 @@ def demo():
     model.set_threshold(0.7)
     
     #img_path = f"{os.path.dirname(__file__)}/../../media/minion.png"
-    img_path = "./media/minion.png" 
+    img_path = "./src/final_challenge/media/minion.png" 
         
     img = Image.open(img_path)
     results = model.predict(img)

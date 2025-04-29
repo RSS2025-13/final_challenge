@@ -21,16 +21,18 @@ setup(
     entry_points={
         'console_scripts': [
             #path following and planning
-            'trajectory_builder = final_challenge.trajectory_builder:main',
-            'trajectory_loader = final_challenge.trajectory_loader:main',
-            'trajectory_follower = final_challenge.trajectory_follower:main',
-            'trajectory_planner = final_challenge.trajectory_planner:main',
+            'trajectory_builder = final_challenge.shrinkray_heist.trajectory_follower.trajectory_builder:main',
+            'trajectory_loader = final_challenge.shrinkray_heist.trajectory_follower.trajectory_loader:main',
+            'trajectory_follower = final_challenge.shrinkray_heist.trajectory_follower.trajectory_follower:main',
+            'trajectory_planner = final_challenge.shrinkray_heist.trajectory_planner.trajectory_planner:main',
             #localization
-            'particle_filter = final_challenge.particle_filter:main',
+            'particle_filter = final_challenge.shrinkray_heist.particle_filter.particle_filter:main',
             #banana finder model
-            'detection_node = final_challenge.detection_node:main',
+            'detection_node = final_challenge.shrinkray_heist.model.detection_node:main',
             #Point publisher
-            'basement_point_publisher = final_challenge.basement_point_publisher:main'
+            'basement_point_publisher = final_challenge.shrinkray_heist.basement_point_publisher:main',
+            #Stop light
+            'stoplight_controller = final_challenge.shrinkray_heist.stoplight_controller:main'
         ],
     },
 )
