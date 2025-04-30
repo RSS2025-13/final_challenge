@@ -4,130 +4,286 @@ import cv2
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
 from enum import Enum, auto
-from geometry_msgs.msg import PoseArray, Pose, PoseStamped
-from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, Header
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point
+from nav_msgs.msg import Odometry, Path
+from std_msgs.msg import Bool, Header, String
 from sensor_msgs.msg import Image
 from color_segmentation import cd_color_segmentation
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 
 class HeistState(Enum):
-    IDLE = auto()
-    PLANNING = auto()
-    FOLLOWING = auto()
-    BANANA_DETECTED = auto()
-    WAITING = auto()
-    FINISHED = auto()
+    IDLE = auto()              # Initial state, waiting for start
+    PLANNING = auto()          # Planning path to next location
+    NAVIGATING = auto()        # Following path to next location
+    STOPLIGHT_DETECTED = auto()# Detected a stoplight
+    WAITING_AT_LIGHT = auto()  # Waiting at stoplight
+    BANANA_DETECTED = auto()   # Detected a banana, need to verify if it's the correct part
+    VERIFYING = auto()         # Verifying if the detected banana is the correct part
+    COLLECTING = auto()        # Stopped at correct banana, collecting part
+    WAITING = auto()           # Waiting after collecting a part
+    FINISHED = auto()          # All parts collected, mission complete
+    ERROR = auto()             # Error state for handling issues
 
 class StateMachine(Node):
     def __init__(self):
         super().__init__('state_machine')
-        self.declare_parameter('banana_color', [0, 255, 0])  # Green BGR
-        self.banana_color = tuple(self.get_parameter('banana_color').value)
+        
+        # State variables
         self.state = HeistState.IDLE
         self.bridge = CvBridge()
-        self.image_subscriber = self.create_subscription(Image, '/zed/zed_node/rgb/image_rect_color', self.image_callback, 10)
-        # self.ackermann_publisher = self.create_publisher(AckermannDriveStamped, '/ackermann_cmd_mux/input/navigation', 10)
-        # self.pose_subscriber = self.create_subscription(PoseArray, '/object_poses', self.pose_callback, 10)
-        self.odom_subscriber = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.banana_detected_publisher = self.create_publisher(Bool, '/banana_detected', 10)
-        self.shrinkraypart_subscriber = self.create_subscription(PoseArray, '/shrinkray_part', self.shrinkray_points_callback, 10)
-        self.trajectory_publisher = self.create_publisher(PoseArray, '/trajectory/current', 10)
-
-        self.banana_detected_msg = Bool()
-        self.banana_detected_msg.data = False
-        self.banana_detected = False
-
-        # WAITING timers
+        self.parts_collected = 0
+        self.total_parts = 2  # We need to collect 2 parts
+        self.current_goal = None
         self.wait_timer = None
         self.wait_duration = 5.0  # seconds to wait at banana
-
-        self.get_logger().info('Ready for Shrink Ray Heist!')
-
-    def shrinkray_points_callback(self, msg: PoseArray):
-        self.goal_points = list(msg.poses)
-        self.current_goal_idx = 0
-        self.state = HeistState.PLANNING
-        self.get_logger().info(f'Received {len(self.goal_points)} goal points. Starting plan to first point.')
-        self.plan_to_next_point()
-
-    def odom_callback(self, msg: Odometry):
-        self.current_pose = msg.pose.pose
-        # TODO: Check if at goal/end, update state if needed
-        if self.state == HeistState.FOLLOWING and self.is_at_goal():
-            if self.current_goal_idx >= len(self.goal_points) - 1:
-                self.state = HeistState.FINISHED
-                self.get_logger().info('Reached final location. Heist complete!')
-                # TODO: Stop the car, disable banana search
-            else:
-                self.current_goal_idx += 1
-                self.state = HeistState.PLANNING
-                self.plan_to_next_point()
-
-    def banana_callback(self, msg):
-        # TODO: Update this for actual banana detection message
-        if msg.detected:
-            self.banana_detected = True
-            if self.state == HeistState.FOLLOWING:
-                self.state = HeistState.BANANA_DETECTED
-                self.get_logger().info('Banana detected! Driving to banana.')
-                # TODO: Drive to banana, then wait
-                self.enter_wait_state()
-    
-    def plan_to_next_point(self):
-        if self.current_goal_idx < len(self.goal_points):
-            goal = self.goal_points[self.current_goal_idx]
-            self.get_logger().info(f'Planning to point {self.current_goal_idx + 1}/{len(self.goal_points)}')
-            # TODO: Call planner node/service to plan from current_pose to goal
-            # Publish planned trajectory to /trajectory/current
-            self.state = HeistState.FOLLOWING
-            # TODO: Start follower node if needed
-        else:
-            self.get_logger().warn('All goal points have been reached. Stopping heist.')
-            self.state = HeistState.FINISHED
-    
-    def is_at_goal(self):
-        # TODO: Implement logic to check if current_pose is close to current goal
-        return False
-
-    def enter_wait_state(self):
-        self.state = HeistState.WAITING
-        self.get_logger().info(f'Waiting {self.wait_duration} seconds at banana.')
-        if self.wait_timer:
-            self.wait_timer.cancel()
-        self.wait_timer = self.create_timer(self.wait_duration, self.wait_done)
-
-    def wait_done(self):
-        self.get_logger().info('Finished waiting at banana. Planning to next shrinkray point.')
-        # TODO: Set new goal point, set start as current location
-        self.state = HeistState.PLANNING
-        self.plan_to_next_point()
-        if self.wait_timer:
-            self.wait_timer.cancel()
-            self.wait_timer = None
+        self.stoplight_wait_duration = 3.0  # seconds to wait at stoplight
+        self.shrinkray_points = []  # List of points to visit
+        self.current_path = None
+        self.path_index = 0
+        
+        # Pure pursuit parameters
+        self.lookahead = 2.0  # meters
+        self.speed = 2.0  # meters/second
+        self.wheelbase_length = 0.34  # meters
+        
+        # Subscribers
+        self.image_subscriber = self.create_subscription(
+            Image, '/zed/zed_node/rgb/image_rect_color', 
+            self.image_callback, 10)
+        self.odom_subscriber = self.create_subscription(
+            Odometry, '/odom', 
+            self.odom_callback, 10)
+        self.banana_detector_subscriber = self.create_subscription(
+            Bool, '/banana_detected', 
+            self.banana_detector_callback, 10)
+        self.shrinkray_part_subscriber = self.create_subscription(
+            PoseArray, '/shrinkray_part', 
+            self.shrinkray_part_callback, 10)
+        self.path_subscriber = self.create_subscription(
+            Path, '/path', 
+            self.path_callback, 10)
+        
+        # Publishers
+        self.drive_publisher = self.create_publisher(
+            AckermannDriveStamped, '/ackermann_cmd_mux/input/navigation', 10)
+        self.trajectory_publisher = self.create_publisher(
+            PoseArray, '/trajectory/current', 10)
+        self.state_publisher = self.create_publisher(
+            Bool, '/heist_state', 10)
+        self.goal_publisher = self.create_publisher(
+            PoseStamped, '/goal_pose', 10)
+        
+        self.get_logger().info('Shrink Ray Heist State Machine initialized!')
 
     def image_callback(self, image_msg):
         try:
             # Convert ROS Image message to OpenCV image
             image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
-
-            # Apply color segmentation to detect the cone
-            stop_detected = cd_color_segmentation(image)
-            if stop_detected:
-                new_drive_msg = AckermannDrive()
-                new_msg = AckermannDriveStamped()
-                new_drive_msg.speed = 0.0
-                new_msg.drive = new_drive_msg
-                header = Header()
-                header.stamp = self.get_clock().now().to_msg()
-                header.frame_id = "racecar"
-                new_msg.header = header
-                self.stoplight_publisher.publish(new_msg)
-
+            
+            # Check for stoplight
+            if self.detect_stoplight(image) and self.state == HeistState.NAVIGATING:
+                self.state = HeistState.STOPLIGHT_DETECTED
+                self.get_logger().info('Stoplight detected! Stopping...')
+                self.stop_car()
+                self.enter_stoplight_wait_state()
+                return
+            
+            # Check for bananas
+            banana_detected = cd_color_segmentation(image)
+            if banana_detected and self.state == HeistState.NAVIGATING:
+                self.state = HeistState.BANANA_DETECTED
+                self.get_logger().info('Banana detected! Entering verification state.')
+                
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge error: {e}")
-        except Exception as e:
-            self.get_logger().error(f"No cone detected: {e}")
+            self.state = HeistState.ERROR
+
+    def detect_stoplight(self, image):
+        # TODO: Implement stoplight detection
+        # This could use color segmentation or other computer vision techniques
+        # Return True if stoplight is detected
+        return False  # Placeholder
+
+    def path_callback(self, msg):
+        if self.state == HeistState.PLANNING:
+            self.current_path = msg.poses
+            self.path_index = 0
+            self.state = HeistState.NAVIGATING
+            self.get_logger().info('Path received, starting navigation')
+
+    def odom_callback(self, msg):
+        self.current_pose = msg.pose.pose
+        
+        if self.state == HeistState.NAVIGATING:
+            if self.is_at_goal():
+                if self.path_index < len(self.current_path) - 1:
+                    self.path_index += 1
+                    self.publish_next_goal()
+                else:
+                    self.state = HeistState.WAITING
+                    self.enter_wait_state()
+            else:
+                # Use pure pursuit to follow the path
+                self.follow_path()
+
+    def follow_path(self):
+        if not self.current_path or self.path_index >= len(self.current_path):
+            return
+
+        # Get current position and orientation
+        x_car = self.current_pose.position.x
+        y_car = self.current_pose.position.y
+        orientation = self.current_pose.orientation
+        sin = 2 * (orientation.w * orientation.z + orientation.x * orientation.y)
+        cos = 1 - 2 * (orientation.y**2 + orientation.z**2)
+        yaw = np.arctan2(sin, cos)
+
+        # Find the closest point on the path
+        path_pts = np.array([[p.position.x, p.position.y] for p in self.current_path])
+        dists = np.linalg.norm(path_pts - np.array([x_car, y_car]), axis=1)
+        closest_idx = np.argmin(dists)
+
+        # Find lookahead point
+        lookahead_pt = None
+        for i in range(closest_idx, len(path_pts) - 1):
+            p1 = path_pts[i]
+            p2 = path_pts[i + 1]
+
+            Q = np.array([x_car, y_car])
+            r = self.lookahead
+            V = p2 - p1           
+            F = p1 - Q
+
+            a = np.dot(V, V)
+            b = 2 * np.dot(V, F)
+            c = np.dot(F, F) - r**2
+
+            discriminant = b**2 - 4 * a * c
+            if discriminant < 0: 
+                continue
+
+            sqrt_disc = np.sqrt(discriminant)
+            t1 = (-b + sqrt_disc) / (2 * a)
+            t2 = (-b - sqrt_disc) / (2 * a)
+
+            if 0 <= t1 <= 1:
+                lookahead_pt = p1 + t1 * V
+                break
+            elif 0 <= t2 <= 1:
+                lookahead_pt = p1 + t2 * V
+                break
+
+        if lookahead_pt is None:
+            return
+
+        # Calculate lookahead point in car's frame
+        dx = lookahead_pt[0] - x_car
+        dy = lookahead_pt[1] - y_car
+        local_x = np.cos(-yaw) * dx - np.sin(-yaw) * dy
+        local_y = np.sin(-yaw) * dx + np.cos(-yaw) * dy
+
+        if local_x == 0:
+            return
+
+        # Calculate steering angle using pure pursuit
+        curvature = (2 * local_y) / (self.lookahead**2)
+        steering_angle = np.arctan(self.wheelbase_length * curvature)
+
+        # Publish drive command
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.speed = self.speed
+        drive_msg.drive.steering_angle = steering_angle
+        self.drive_publisher.publish(drive_msg)
+
+    def publish_next_goal(self):
+        if self.current_path and self.path_index < len(self.current_path):
+            goal = PoseStamped()
+            goal.header = Header()
+            goal.header.stamp = self.get_clock().now().to_msg()
+            goal.header.frame_id = "map"
+            goal.pose = self.current_path[self.path_index]
+            self.goal_publisher.publish(goal)
+
+    def enter_stoplight_wait_state(self):
+        self.state = HeistState.WAITING_AT_LIGHT
+        self.get_logger().info(f'Waiting {self.stoplight_wait_duration} seconds at stoplight...')
+        
+        if self.wait_timer:
+            self.wait_timer.cancel()
+        self.wait_timer = self.create_timer(self.stoplight_wait_duration, self.stoplight_wait_done)
+
+    def stoplight_wait_done(self):
+        self.state = HeistState.NAVIGATING
+        self.get_logger().info('Stoplight wait complete, resuming navigation')
+        
+        if self.wait_timer:
+            self.wait_timer.cancel()
+            self.wait_timer = None
+
+    def banana_detector_callback(self, msg):
+        if msg.data and self.state == HeistState.BANANA_DETECTED:
+            self.state = HeistState.VERIFYING
+            self.get_logger().info('Verifying banana...')
+
+    def shrinkray_part_callback(self, msg):
+        if self.state == HeistState.VERIFYING:
+            # Verify if this is the correct part
+            if self.is_correct_part(msg):
+                self.state = HeistState.COLLECTING
+                self.get_logger().info('Correct part found! Collecting...')
+                self.stop_car()
+                self.enter_wait_state()
+
+    def is_at_goal(self):
+        if not self.current_path or self.path_index >= len(self.current_path):
+            return False
+            
+        # Calculate distance to current path point
+        current_goal = self.current_path[self.path_index]
+        dx = self.current_pose.position.x - current_goal.position.x
+        dy = self.current_pose.position.y - current_goal.position.y
+        distance = np.sqrt(dx**2 + dy**2)
+        
+        return distance < 0.5  # Within 0.5 meters of goal
+
+    def is_correct_part(self, part_msg):
+        # TODO: Implement logic to verify if this is the correct part
+        # This could involve checking specific features or properties of the part
+        return True  # Placeholder
+
+    def enter_wait_state(self):
+        self.state = HeistState.WAITING
+        self.get_logger().info(f'Waiting {self.wait_duration} seconds...')
+        
+        if self.wait_timer:
+            self.wait_timer.cancel()
+        self.wait_timer = self.create_timer(self.wait_duration, self.wait_done)
+
+    def wait_done(self):
+        self.parts_collected += 1
+        self.get_logger().info(f'Part {self.parts_collected}/{self.total_parts} collected!')
+        
+        if self.parts_collected >= self.total_parts:
+            self.state = HeistState.FINISHED
+            self.get_logger().info('All parts collected! Mission complete!')
+        else:
+            self.state = HeistState.PLANNING
+            self.get_logger().info('Planning path to next location...')
+        
+        if self.wait_timer:
+            self.wait_timer.cancel()
+            self.wait_timer = None
+
+    def stop_car(self):
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.speed = 0.0
+        drive_msg.drive.steering_angle = 0.0
+        self.drive_publisher.publish(drive_msg)
+
+    def publish_state(self):
+        state_msg = Bool()
+        state_msg.data = self.state != HeistState.FINISHED
+        self.state_publisher.publish(state_msg)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -136,4 +292,4 @@ def main(args=None):
     rclpy.shutdown()
 
 if __name__ == '__main__':
-    main()
+    main() 
