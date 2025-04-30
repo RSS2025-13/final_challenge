@@ -12,7 +12,8 @@ class BasementPointPublisher(Node):
 
     def __init__(self):
         super().__init__("BasementPointPub")
-        self.publisher = self.create_publisher(PoseArray, "/shrinkray_part", 1)
+        self.shrinkray_publisher = self.create_publisher(PoseArray, "/shrinkray_loc", 1)
+        self.stoplight_publisher = self.create_publisher(PoseArray, "/stoplight_loc", 1)
         self.subscriber = self.create_subscription(PointStamped, "/clicked_point", self.callback, 1)
 
         self.array = []
@@ -24,22 +25,32 @@ class BasementPointPublisher(Node):
         self.get_logger().info(f"Received point: {x}, {y}")
         self.array.append(Pose(position=Point(x=x, y=y, z=0.0)))
         
-        if len(self.array) == 2:
+        if len(self.array) == 1: #stoplight
+            self.publish(first=True)
+        if len(self.array) == 3: #three points published (then two bananas)
             self.publish()
 
-    def publish(self):
-        # Publish PoseArray
-        pose_array = PoseArray()
-        pose_array.header.frame_id = "map"
-        pose_array.poses = self.array
-        self.publisher.publish(pose_array)
+    def publish(self, first=False):
+        # Publish PoseArrays
+        if first:
+            stoplight = PoseArray()
+            stoplight.header.frame_id = "map"
+            stoplight.poses = self.array[0]
+            self.publisher.publish(stoplight)
 
-        # Print to Command Line
-        points_str = '\n'+'\n'.join([f"({p.position.x},{p.position.y})" for p in self.array])
-        self.get_logger().info(f"Published 2 points: {points_str}")
+            point_str = '\n'+'\n'.join([f"({p.position.x},{p.position.y})" for p in self.array])
+            self.get_logger().info(f"Published stoplight point: {point_str}")
+        else:
+            shrinkray = PoseArray()
+            shrinkray.header.frame_id = "map"
+            shrinkray.poses = self.array[1:]
+            self.publisher.publish(shrinkray)
+            
+            points_str = '\n'+'\n'.join([f"({p.position.x},{p.position.y})" for p in self.array])
+            self.get_logger().info(f"Published 2 points: {points_str}")
 
-        # Reset Array
-        self.array = []
+            # Reset Array
+            self.array = []
     
 
 def main(args=None):

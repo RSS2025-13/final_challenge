@@ -14,7 +14,7 @@ find_package(rosidl_default_runtime REQUIRED)
 # find_package(<dependency> REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/Pixel.msg"
+  "msg/Location.msg"
 )
 
 if(BUILD_TESTING)
