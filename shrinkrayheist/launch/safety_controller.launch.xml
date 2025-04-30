@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Launch the safety controller node -->
+  <node pkg="shrinkrayheist" exec="safety_controller" name="safety_controller" output="screen">
+    <param name="safety_topic" value="/vesc/low_level/input/safety"/>
+  </node>
+</launch>
