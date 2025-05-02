@@ -1,0 +1,13 @@
+<launch>
+    <!-- <node pkg="shrinkray_heist" exec="basement_point_publisher" name="basement_point_publisher" output="screen">
+        <param from="$(find-pkg-share final_challenge)/shrinkray_heist_params.yaml"/>
+    </node> -->
+    <node pkg="shrinkray_heist" exec="state_machine" name="state_machine" output="screen">
+    </node>
+    <node pkg="localization" exec="particle_filter" name="particle_filter" output="screen">
+    </node>
+    <!-- <node pkg="shrinkray_heist" exec="stoplight_controller" name="stoplight_controller" output="screen">
+    </node> -->
+    <!-- <node pkg="shrinkray_heist" exec="safety_controller" name="safety_controller" output="screen">
+    </node> -->
+</launch>
