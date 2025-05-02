@@ -80,8 +80,7 @@ class StateMachine(Node):
             Bool, '/heist_state', 10)
         self.goal_publisher = self.create_publisher(
             PoseStamped, '/goal_pose', 10)
-        self.debug_publisher = self.create_publisher(
-            Image, '/stoplight_masked', 1)
+        self.debug_publisher = self.create_publisher(Image, '/stoplight_masked', 1)
         
         self.get_logger().info('Shrink Ray Heist State Machine initialized!')
 
@@ -91,8 +90,9 @@ class StateMachine(Node):
             image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
             
             # Check for stoplight
-            self.mask_stoplight(image)
-            if self.state == HeistState.NAVIGATING and self.in_radius(self.STOPLIGHT_POSE, self.STOPLIGHT_CHECK_RADIUS) and self.detect_stoplight(image):
+            #self.mask_stoplight(image)
+            if self.detect_stoplight(image):
+            #if self.state == HeistState.NAVIGATING and self.in_radius(self.STOPLIGHT_POSE, self.STOPLIGHT_CHECK_RADIUS) and self.detect_stoplight(image):
                 self.state = HeistState.STOPLIGHT_DETECTED
                 self.get_logger().info('Stoplight detected! Stopping...')
                 self.stop_car()
@@ -100,10 +100,10 @@ class StateMachine(Node):
                 return
             
             # Check for bananas
-            # banana_detected = cd_color_segmentation(image)
-            # if banana_detected and self.state == HeistState.NAVIGATING:
-            #     self.state = HeistState.BANANA_DETECTED
-            #     self.get_logger().info('Banana detected! Entering verification state.')
+            #banana_detected = cd_color_segmentation(image)
+            #if banana_detected and self.state == HeistState.NAVIGATING:
+                #self.state = HeistState.BANANA_DETECTED
+                #self.get_logger().info('Banana detected! Entering verification state.')
                 
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge error: {e}")
@@ -118,35 +118,44 @@ class StateMachine(Node):
         hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
         #optimization on pictures?
-        lower_red_bound = np.array([0, int(255*0.8), int(255*0.8)])
-        upper_red_bound = np.array([8, 255, 255])
+        #lower_red_bound = np.array([0, int(255*0.8), int(255*0.8)])
+        #upper_red_bound = np.array([8, 255, 255])
+        #testing with orange cone
+        lower_red_bound = np.array([0, 200, 102])
+        upper_red_bound = np.array([30, 255, 255])
         mask_light = cv2.inRange(hsv_img, lower_red_bound, upper_red_bound)
 
         # Find the largest contour
+        [x,y,w,h] = [0,0,0,0]
         contours, _ = cv2.findContours(mask_light, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             largest_contour = max(contours, key=cv2.contourArea)  # Find the contour with the largest area
             largest_blob_area = cv2.contourArea(largest_contour)  # Get the area of the largest blob
-            if largest_blob_area > 40:
+            if largest_blob_area > 500:
                 found = True
             else:
                 self.get_logger().info(f"Contour is only {largest_blob_area}")
+            [x,y,w,h] = cv2.boundingRect(largest_contour)
         else:
             self.get_logger().info("No contours found")
+
+        out = cv2.bitwise_and(image, image, mask=mask_light)
+        cv2.rectangle(out, (x,y), (x+w,y+h),(0,255,0),2)
+        img_out = self.bridge.cv2_to_imgmsg(out,encoding='rgb8')
+        self.debug_publisher.publish(img_out)
         return found
-    
-    #just to visualize masked image from hsv segmentation for testing
+    #debugger
     def mask_stoplight(self, image):
         #Return masked image for debug
         hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-        #optimization on pictures?
-        lower_red_bound = np.array([0, int(255*0.8), int(255*0.8)])
-        upper_red_bound = np.array([8, 255, 255])
+        #optimization on pictures? #testing with orange
+        lower_red_bound = np.array([0, 200, 102])
+        upper_red_bound = np.array([30, 255, 255])
         mask_light = cv2.inRange(hsv_img, lower_red_bound, upper_red_bound)
 
-        out = cv2.bitwise_and(image,image,mask=mask_light)
-        img_out = self.bridge.cv2_to_imgmsg(out,encoding='bgr8')
+        out = cv2.bitwise_and(image, image, mask=mask_light)
+        img_out = self.bridge.cv2_to_imgmsg(out,encoding='rgb8')
         self.debug_publisher.publish(img_out)
 
     def path_callback(self, msg):
