@@ -4,7 +4,7 @@ import cv2
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
 from enum import Enum, auto
-from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped, Point, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool, Header, String
 from sensor_msgs.msg import Image
@@ -42,6 +42,7 @@ class StateMachine(Node):
         self.stoplight_wait_duration = 3.0  # seconds to wait at stoplight
         self.shrinkray_points = []  # List of points to visit
         self.current_pose = None
+        self.current_goal_index = 0
         
         # Banana detection variables
         self.banana_detector = Detector(yolo_dir='./shrinkray_heist/model', from_tensor_rt=False)
@@ -82,6 +83,8 @@ class StateMachine(Node):
         # Publishers
         self.goal_publisher = self.create_publisher(
             PoseStamped, '/goal_pose', 10)
+        self.initial_pose_publisher = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
         self.debug_publisher = self.create_publisher(Image, '/stoplight_masked', 1)
         self.banana_debug_publisher = self.create_publisher(Image, '/banana_detection', 1)
         self.drive_publisher = self.create_publisher(
@@ -90,6 +93,7 @@ class StateMachine(Node):
         self.get_logger().info('Shrink Ray Heist State Machine initialized!')
 
     def trajectory_callback(self, msg):
+        """Start navigating when trajectory is received"""
         if self.state == HeistState.PLANNING:
             self.state = HeistState.NAVIGATING
             self.get_logger().info('Received trajectory, starting navigation')
@@ -203,12 +207,13 @@ class StateMachine(Node):
             # State machine will continue after safety stop is released
 
     def odom_callback(self, msg):
+        """Update current pose and check if we've reached the current goal"""
         self.current_pose = msg.pose.pose
-        
-        if self.state == HeistState.NAVIGATING:
-            # Check if we've reached the current goal
-            if self.current_goal is not None and self.is_at_goal():
-                self.state = HeistState.WAITING
+        if self.state == HeistState.NAVIGATING and self.shrinkray_points:
+            current_goal = self.shrinkray_points[self.current_goal_index]
+            if self.in_radius((current_goal.position.x, current_goal.position.y), 0.5):
+                self.get_logger().info(f"Reached goal {self.current_goal_index + 1}")
+                self.stop_car()
                 self.enter_wait_state()
 
     def stoplight_part_callback(self, msg):
@@ -217,21 +222,20 @@ class StateMachine(Node):
             self.get_logger().info(f'Stoplight position updated: {self.stoplight_pose}')
 
     def shrinkray_part_callback(self, msg):
-        if msg.poses:
-            self.shrinkray_points = [(p.position.x, p.position.y) for p in msg.poses]
-            self.get_logger().info(f'Shrinkray points updated: {self.shrinkray_points}')
-            if self.state == HeistState.IDLE:
-                self.state = HeistState.PLANNING
-                self.publish_next_goal()
+        """Store shrinkray points and start planning if we have all points"""
+        if len(msg.poses) >= 2:
+            self.shrinkray_points = msg.poses
+            self.current_goal_index = 0
+            self.get_logger().info("Received shrinkray points, starting planning")
+            self.state = HeistState.PLANNING
+            self.publish_initial_pose()
+            self.publish_next_goal()
 
     def stoplight_part_callback(self, msg):
+        """Store stoplight point for proximity checking"""
         if msg.poses:
             self.stoplight_pose = (msg.poses[0].position.x, msg.poses[0].position.y)
             self.get_logger().info(f'Stoplight position updated: {self.stoplight_pose}')
-
-    # def is_at_goal(self):
-    #     if not self.current_path or self.path_index >= len(self.current_path):
-    #         return False
             
         # Calculate distance to current path point
         current_goal = self.current_path[self.path_index]
@@ -246,6 +250,73 @@ class StateMachine(Node):
         # This could involve checking specific features or properties of the part
         return True  # Placeholder
     
+    # def enter_stoplight_wait_state(self):
+    #     self.wait_timer = self.create_timer(self.stoplight_wait_duration, self.stoplight_wait_done)
+
+    # def stoplight_wait_done(self):
+    #     self.wait_timer.cancel()
+    #     self.state = HeistState.NAVIGATING
+    #     self.get_logger().info('Stoplight wait complete, resuming navigation')
+
+    def publish_initial_pose(self):
+        """Publish current pose as initial pose for path planning"""
+        if self.current_pose:
+            msg = PoseWithCovarianceStamped()
+            msg.header.frame_id = "map"
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.pose.pose = self.current_pose
+            self.initial_pose_publisher.publish(msg)
+            self.get_logger().info("Published initial pose")
+
+    def publish_next_goal(self):
+        """Publish the next goal point for path planning"""
+        if self.shrinkray_points and self.current_goal_index < len(self.shrinkray_points):
+            goal = PoseStamped()
+            goal.header.frame_id = "map"
+            goal.header.stamp = self.get_clock().now().to_msg()
+            goal.pose = self.shrinkray_points[self.current_goal_index]
+            self.goal_publisher.publish(goal)
+            self.get_logger().info(f"Published goal {self.current_goal_index + 1}")
+
+    def enter_wait_state(self):
+        """Enter waiting state after reaching a goal"""
+        self.state = HeistState.WAITING
+        self.wait_timer = self.create_timer(self.wait_duration, self.wait_done)
+        self.get_logger().info(f'Waiting {self.wait_duration} seconds...')
+
+    def wait_done(self):
+        """Handle completion of waiting state"""
+        self.parts_collected += 1
+        self.get_logger().info(f'Part {self.parts_collected}/{self.total_parts} collected!')
+        
+        if self.wait_timer:
+            self.wait_timer.cancel()
+            self.wait_timer = None
+        
+        if self.parts_collected >= self.total_parts:
+            self.state = HeistState.FINISHED
+            self.get_logger().info('All parts collected! Mission complete!')
+        else:
+            self.current_goal_index += 1
+            self.state = HeistState.PLANNING
+            self.publish_initial_pose()
+            self.publish_next_goal()
+            self.get_logger().info('Planning path to next location...')
+
+    def stop_car(self):
+        """Stop the car"""
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.speed = 0.0
+        drive_msg.drive.steering_angle = 0.0
+        self.drive_publisher.publish(drive_msg)
+
+    def in_radius(self, loc, radius):
+        """Check if current position is within radius of a location"""
+        if not self.current_pose:
+            return False
+        v2 = (self.current_pose.position.x - loc[0])**2 + (self.current_pose.position.y - loc[1])**2
+        return v2 <= radius**2
+
     def enter_stoplight_wait_state(self):
         self.wait_timer = self.create_timer(self.stoplight_wait_duration, self.stoplight_wait_done)
 
@@ -253,58 +324,6 @@ class StateMachine(Node):
         self.wait_timer.cancel()
         self.state = HeistState.NAVIGATING
         self.get_logger().info('Stoplight wait complete, resuming navigation')
-
-    def enter_wait_state(self):
-        self.wait_timer = self.create_timer(self.wait_duration, self.wait_done)
-
-    def wait_done(self):
-        self.parts_collected += 1
-        self.get_logger().info(f'Part {self.parts_collected}/{self.total_parts} collected!')
-        
-        if self.parts_collected >= self.total_parts:
-            self.state = HeistState.FINISHED
-            self.get_logger().info('All parts collected! Mission complete!')
-        else:
-            self.state = HeistState.PLANNING
-            self.get_logger().info('Planning path to next location...')
-        
-        if self.wait_timer:
-            self.wait_timer.cancel()
-            self.wait_timer = None
-
-    def stop_car(self):
-        drive_msg = AckermannDriveStamped()
-        drive_msg.drive.speed = 0.0
-        drive_msg.drive.steering_angle = 0.0
-        self.drive_publisher.publish(drive_msg)
-
-    def publish_next_goal(self):
-        if self.parts_collected < len(self.shrinkray_points):
-            goal = PoseStamped()
-            goal.header = Header()
-            goal.header.stamp = self.get_clock().now().to_msg()
-            goal.header.frame_id = "map"
-            goal.pose.position.x = self.shrinkray_points[self.parts_collected][0]
-            goal.pose.position.y = self.shrinkray_points[self.parts_collected][1]
-            goal.pose.orientation.w = 1.0
-            self.current_goal = goal.pose
-            self.goal_publisher.publish(goal)
-            self.get_logger().info(f'Published goal for part {self.parts_collected + 1}')
-            self.state = HeistState.PLANNING
-
-    def is_at_goal(self):
-        if self.current_pose is None or self.current_goal is None:
-            return False
-            
-        dx = self.current_pose.position.x - self.current_goal.position.x
-        dy = self.current_pose.position.y - self.current_goal.position.y
-        distance = np.sqrt(dx*dx + dy*dy)
-        
-        return distance < 0.5  # Within 0.5 meters of goal
-
-    def in_radius(self,loc,radius):
-        v2 = (self.current_pose.position.x - loc[0])**2 + (self.current_pose.position.y - loc[1])**2
-        return v2 <= radius**2
 
 def main(args=None):
     rclpy.init(args=args)
