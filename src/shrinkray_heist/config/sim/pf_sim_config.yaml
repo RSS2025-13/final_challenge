@@ -1,0 +1,11 @@
+trajectory_planner:
+  ros__parameters:
+    odom_topic: "/pf/pose/odom"
+    map_topic: "/map"
+    scan_topic: "/scan"
+    initial_pose_topic: "/initialpose"
+    is_search_based: True
+trajectory_follower:
+  ros__parameters:
+    odom_topic: "/pf/pose/odom"
+    drive_topic: "/drive"

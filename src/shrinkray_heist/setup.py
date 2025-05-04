@@ -29,7 +29,17 @@ setup(
             #Safety controller
             'safety_controller = shrinkray_heist.safety_controller:main',
             #State Machine
-            'state_machine = shrinkray_heist.state_machine:main'
+            'state_machine = shrinkray_heist.state_machine:main',
+            #Trajectory Planner
+            'trajectory_planner = shrinkray_heist.trajectory_planner:main',
+            #Trajectory Follower
+            'trajectory_follower = shrinkray_heist.trajectory_follower:main',
+            #Trajectory Loader
+            'trajectory_loader = shrinkray_heist.trajectory_loader:main',
+            #Trajectory Builder
+            'trajectory_builder = shrinkray_heist.trajectory_builder:main',
+            #Color Segmentation
+            'color_segmentation = shrinkray_heist.color_segmentation:main',
         ],
     },
 )

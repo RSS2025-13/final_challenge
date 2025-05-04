@@ -10,6 +10,9 @@ from std_msgs.msg import Bool, Header, String
 from sensor_msgs.msg import Image
 #from color_segmentation import cd_color_segmentation
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
+from .model.detector import Detector
+import os
+from datetime import datetime
 
 class HeistState(Enum):
     IDLE = auto()              # Initial state, waiting for start
@@ -41,6 +44,14 @@ class StateMachine(Node):
         self.current_path = None
         self.current_pose = None
         self.path_index = 0
+        
+        # Banana detection variables
+        self.banana_detector = Detector(yolo_dir='./shrinkray_heist/model', from_tensor_rt=False)
+        self.banana_detection_timer = None
+        self.banana_detection_duration = 3.0  # seconds to wait for banana detection
+        self.banana_distance_threshold = 1.0  # meters
+        self.last_banana_image = None
+        self.banana_detection_start_time = None
         
         # Pure pursuit parameters
         self.lookahead = 2.0  # meters
@@ -81,6 +92,7 @@ class StateMachine(Node):
         self.goal_publisher = self.create_publisher(
             PoseStamped, '/goal_pose', 10)
         self.debug_publisher = self.create_publisher(Image, '/stoplight_masked', 1)
+        self.banana_debug_publisher = self.create_publisher(Image, '/banana_detection', 1)
         
         self.get_logger().info('Shrink Ray Heist State Machine initialized!')
 
@@ -100,10 +112,39 @@ class StateMachine(Node):
                 return
             
             # Check for bananas
-            #banana_detected = cd_color_segmentation(image)
-            #if banana_detected and self.state == HeistState.NAVIGATING:
-                #self.state = HeistState.BANANA_DETECTED
-                #self.get_logger().info('Banana detected! Entering verification state.')
+            if self.state == HeistState.NAVIGATING or self.state == HeistState.BANANA_DETECTED:
+                results = self.banana_detector.predict(image)
+                predictions = results["predictions"]
+                
+                if predictions and any(label == "banana" for (_, label) in predictions):
+                    if self.state == HeistState.NAVIGATING:
+                        self.state = HeistState.BANANA_DETECTED
+                        self.get_logger().info('Banana detected! Starting verification...')
+                        self.last_banana_image = image
+                        self.banana_detection_start_time = self.get_clock().now()
+                    elif self.state == HeistState.BANANA_DETECTED:
+                        # Draw bounding box on image
+                        marked_image = self.banana_detector.draw_box(image, predictions, draw_all=True)
+                        # Convert to ROS message and publish for debugging
+                        img_msg = self.bridge.cv2_to_imgmsg(marked_image, encoding="bgr8")
+                        self.banana_debug_publisher.publish(img_msg)
+                        
+                        # Check if we've been within range for long enough
+                        if self.banana_detection_start_time is not None:
+                            elapsed_time = (self.get_clock().now() - self.banana_detection_start_time).nanoseconds / 1e9
+                            if elapsed_time >= self.banana_detection_duration:
+                                # Save the image with bounding box
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                save_path = os.path.join(os.path.expanduser("~"), "banana_detections")
+                                os.makedirs(save_path, exist_ok=True)
+                                save_file = os.path.join(save_path, f"banana_{timestamp}.png")
+                                cv2.imwrite(save_file, marked_image)
+                                self.get_logger().info(f'Saved banana detection image to {save_file}')
+                                
+                                # Move to collecting state
+                                self.state = HeistState.COLLECTING
+                                self.stop_car()
+                                self.enter_wait_state()
                 
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge error: {e}")
